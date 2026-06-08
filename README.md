@@ -166,6 +166,6 @@ available I2C instance count may differ.
 
 ## License
 
-MIT License.
+MIT No Attribution License (MIT-0). See [LICENSE](LICENSE).
 
-Copyright (c) 2026 SulaoLab
+Attribution is appreciated but not required.
