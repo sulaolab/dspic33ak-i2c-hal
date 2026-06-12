@@ -6,9 +6,17 @@
  * Module state
  * -------------------------------------------------------------------------- */
 
+typedef enum {
+    DSPIC33AK_I2C_PENDING_NONE = 0,
+    DSPIC33AK_I2C_PENDING_MASTER_WRITE
+} dspic33ak_i2c_pending_state_t;
+
 static uint32_t g_timeout_ms[DSPIC33AK_I2C_INST_COUNT];
 static dspic33ak_i2c_get_ms_fn g_get_ms[DSPIC33AK_I2C_INST_COUNT];
 static bool g_initialized[DSPIC33AK_I2C_INST_COUNT];
+static dspic33ak_i2c_pending_state_t g_pending_state[DSPIC33AK_I2C_INST_COUNT];
+static uint32_t g_pending_start_ms[DSPIC33AK_I2C_INST_COUNT];
+static uint32_t g_pending_timeout_ms[DSPIC33AK_I2C_INST_COUNT];
 
 /* --------------------------------------------------------------------------
  * Local helper prototypes
@@ -31,6 +39,31 @@ static uint32_t calc_brg(uint32_t fcy_hz, uint32_t bus_hz);
 static bool timeout_enabled(dspic33ak_i2c_instance_t inst);
 static uint32_t timeout_start_ms(dspic33ak_i2c_instance_t inst);
 static bool timeout_expired(dspic33ak_i2c_instance_t inst, uint32_t start_ms);
+static bool pending_timeout_enabled(dspic33ak_i2c_instance_t inst);
+static bool pending_timeout_expired(dspic33ak_i2c_instance_t inst);
+static void pending_clear(dspic33ak_i2c_instance_t inst);
+static void pending_set(
+    dspic33ak_i2c_instance_t inst,
+    dspic33ak_i2c_pending_state_t state);
+static dspic33ak_i2c_status_t recover_stale_pending_if_needed(
+    dspic33ak_i2c_instance_t inst);
+static dspic33ak_i2c_status_t begin_independent_transaction(
+    dspic33ak_i2c_instance_t inst);
+static dspic33ak_i2c_status_t write_no_stop_sequence(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t addr7,
+    const uint8_t *tx,
+    size_t tx_len);
+static dspic33ak_i2c_status_t read_after_restart_sequence(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t addr7,
+    uint8_t *rx,
+    size_t rx_len);
+static dspic33ak_i2c_status_t stop_pending_sequence(
+    dspic33ak_i2c_instance_t inst);
+static dspic33ak_i2c_status_t abort_pending_sequence(
+    dspic33ak_i2c_instance_t inst,
+    dspic33ak_i2c_status_t original_status);
 static void clear_transfer_status(const dspic33ak_i2c_regs_t *r);
 static dspic33ak_i2c_status_t check_bus_fault(dspic33ak_i2c_instance_t inst);
 static dspic33ak_i2c_status_t wait_until(
@@ -102,6 +135,8 @@ dspic33ak_i2c_status_t dspic33ak_i2c_init(
 
     g_timeout_ms[inst] = config->timeout_ms;
     g_get_ms[inst] = config->get_ms;
+    g_pending_timeout_ms[inst] = config->pending_timeout_ms;
+    pending_clear(inst);
     g_initialized[inst] = true;
 
     dspic33ak_i2c_reg_set(r->CON1, DSPIC33AK_I2C_CON1_ON);
@@ -127,24 +162,42 @@ dspic33ak_i2c_status_t dspic33ak_i2c_deinit(
         return st;
     }
 
-    if (dspic33ak_i2c_reg_is_set(r->STAT2, DSPIC33AK_I2C_STAT2_HSTACT) ||
-        dspic33ak_i2c_reg_is_set(r->STAT1, DSPIC33AK_I2C_STAT1_TRSTAT) ||
-        dspic33ak_i2c_reg_is_set(r->CON1,
-                                  DSPIC33AK_I2C_CON1_SEN |
-                                  DSPIC33AK_I2C_CON1_RSEN |
-                                  DSPIC33AK_I2C_CON1_PEN |
-                                  DSPIC33AK_I2C_CON1_RCEN |
-                                  DSPIC33AK_I2C_CON1_ACKEN)) {
-        return DSPIC33AK_I2C_ERR_BUSY;
+    st = recover_stale_pending_if_needed(inst);
+    if (st != DSPIC33AK_I2C_OK &&
+        st != DSPIC33AK_I2C_ERR_TIMEOUT &&
+        st != DSPIC33AK_I2C_ERR_BUS &&
+        st != DSPIC33AK_I2C_ERR_COLLISION) {
+        return st;
     }
 
+    if (st == DSPIC33AK_I2C_OK &&
+        g_pending_state[inst] == DSPIC33AK_I2C_PENDING_NONE) {
+        if (dspic33ak_i2c_reg_is_set(r->STAT2, DSPIC33AK_I2C_STAT2_HSTACT) ||
+            dspic33ak_i2c_reg_is_set(r->STAT1, DSPIC33AK_I2C_STAT1_TRSTAT) ||
+            dspic33ak_i2c_reg_is_set(r->CON1,
+                                      DSPIC33AK_I2C_CON1_SEN |
+                                      DSPIC33AK_I2C_CON1_RSEN |
+                                      DSPIC33AK_I2C_CON1_PEN |
+                                      DSPIC33AK_I2C_CON1_RCEN |
+                                      DSPIC33AK_I2C_CON1_ACKEN)) {
+            return DSPIC33AK_I2C_ERR_BUSY;
+        }
+    }
+
+    /*
+     * If a pending transaction is still latched, deinit is the explicit
+     * recovery path.  Force the peripheral and HAL state off instead of
+     * leaving the caller with no way out when pending timeout is disabled.
+     */
     dspic33ak_i2c_reg_clear(r->CON1, DSPIC33AK_I2C_CON1_ON);
 
     g_timeout_ms[inst] = 0u;
     g_get_ms[inst] = 0;
+    g_pending_timeout_ms[inst] = 0u;
+    pending_clear(inst);
     g_initialized[inst] = false;
 
-    return DSPIC33AK_I2C_OK;
+    return st;
 }
 
 /* --------------------------------------------------------------------------
@@ -177,38 +230,22 @@ dspic33ak_i2c_status_t dspic33ak_i2c_write(
     size_t tx_len)
 {
     dspic33ak_i2c_status_t st;
-    size_t i;
 
     if (tx_len != 0u && tx == 0) {
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
-    st = check_initialized(inst);
+    st = begin_independent_transaction(inst);
     if (st != DSPIC33AK_I2C_OK) {
         return st;
     }
 
-    st = start_blocking(inst);
+    st = write_no_stop_sequence(inst, addr7, tx, tx_len);
     if (st != DSPIC33AK_I2C_OK) {
-        (void)stop_quiet(inst);
         return st;
     }
 
-    st = send_address_blocking(inst, addr7, false);
-    if (st != DSPIC33AK_I2C_OK) {
-        (void)stop_quiet(inst);
-        return st;
-    }
-
-    for (i = 0u; i < tx_len; i++) {
-        st = write_byte_blocking(inst, tx[i]);
-        if (st != DSPIC33AK_I2C_OK) {
-            (void)stop_quiet(inst);
-            return st;
-        }
-    }
-
-    return stop_quiet(inst);
+    return stop_pending_sequence(inst);
 }
 
 /* --------------------------------------------------------------------------
@@ -227,7 +264,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_read(
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
-    st = check_initialized(inst);
+    st = begin_independent_transaction(inst);
     if (st != DSPIC33AK_I2C_OK) {
         return st;
     }
@@ -268,59 +305,92 @@ dspic33ak_i2c_status_t dspic33ak_i2c_write_read(
     size_t rx_len)
 {
     dspic33ak_i2c_status_t st;
-    size_t i;
 
     if ((tx_len != 0u && tx == 0) || rx == 0 || rx_len == 0u) {
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
-    st = check_initialized(inst);
+    st = begin_independent_transaction(inst);
     if (st != DSPIC33AK_I2C_OK) {
         return st;
     }
 
-    st = start_blocking(inst);
+    st = write_no_stop_sequence(inst, addr7, tx, tx_len);
     if (st != DSPIC33AK_I2C_OK) {
-        (void)stop_quiet(inst);
         return st;
     }
 
-    st = send_address_blocking(inst, addr7, false);
+    return read_after_restart_sequence(inst, addr7, rx, rx_len);
+}
+
+/* --------------------------------------------------------------------------
+ * Blocking master write transaction without STOP
+ * -------------------------------------------------------------------------- */
+dspic33ak_i2c_status_t dspic33ak_i2c_master_write_no_stop(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t addr7,
+    const uint8_t *tx,
+    size_t tx_len)
+{
+    dspic33ak_i2c_status_t st;
+
+    if (tx_len != 0u && tx == 0) {
+        return DSPIC33AK_I2C_ERR_INVALID_ARG;
+    }
+
+    st = begin_independent_transaction(inst);
     if (st != DSPIC33AK_I2C_OK) {
-        (void)stop_quiet(inst);
         return st;
     }
 
-    for (i = 0u; i < tx_len; i++) {
-        st = write_byte_blocking(inst, tx[i]);
-        if (st != DSPIC33AK_I2C_OK) {
-            (void)stop_quiet(inst);
-            return st;
-        }
+    return write_no_stop_sequence(inst, addr7, tx, tx_len);
+}
+
+/* --------------------------------------------------------------------------
+ * Blocking master read after repeated START from a pending write
+ * -------------------------------------------------------------------------- */
+dspic33ak_i2c_status_t dspic33ak_i2c_master_read_after_restart(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t addr7,
+    uint8_t *rx,
+    size_t rx_len)
+{
+    dspic33ak_i2c_status_t st;
+
+    if (rx == 0 || rx_len == 0u) {
+        return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
-    st = restart_blocking(inst);
+    st = recover_stale_pending_if_needed(inst);
     if (st != DSPIC33AK_I2C_OK) {
-        (void)stop_quiet(inst);
         return st;
     }
 
-    st = send_address_blocking(inst, addr7, true);
+    if (g_pending_state[inst] != DSPIC33AK_I2C_PENDING_MASTER_WRITE) {
+        return DSPIC33AK_I2C_ERR_SEQUENCE;
+    }
+
+    return read_after_restart_sequence(inst, addr7, rx, rx_len);
+}
+
+/* --------------------------------------------------------------------------
+ * Blocking master STOP for an explicit pending transaction end
+ * -------------------------------------------------------------------------- */
+dspic33ak_i2c_status_t dspic33ak_i2c_master_stop(
+    dspic33ak_i2c_instance_t inst)
+{
+    dspic33ak_i2c_status_t st;
+
+    st = recover_stale_pending_if_needed(inst);
     if (st != DSPIC33AK_I2C_OK) {
-        (void)stop_quiet(inst);
         return st;
     }
 
-    for (i = 0u; i < rx_len; i++) {
-        bool ack = ((i + 1u) < rx_len);
-        st = read_byte_blocking(inst, &rx[i], ack);
-        if (st != DSPIC33AK_I2C_OK) {
-            (void)stop_quiet(inst);
-            return st;
-        }
+    if (g_pending_state[inst] == DSPIC33AK_I2C_PENDING_NONE) {
+        return DSPIC33AK_I2C_ERR_SEQUENCE;
     }
 
-    return stop_quiet(inst);
+    return stop_pending_sequence(inst);
 }
 
 /* ========================================================================== */
@@ -843,6 +913,235 @@ static bool timeout_expired(dspic33ak_i2c_instance_t inst, uint32_t start_ms)
 
     now = g_get_ms[inst]();
     return ((uint32_t)(now - start_ms) >= g_timeout_ms[inst]);
+}
+
+/* --------------------------------------------------------------------------
+ * Check whether pending transaction timeout is enabled
+ * -------------------------------------------------------------------------- */
+static bool pending_timeout_enabled(dspic33ak_i2c_instance_t inst)
+{
+    return inst_is_valid(inst) &&
+           (g_get_ms[inst] != 0) &&
+           (g_pending_timeout_ms[inst] != 0u);
+}
+
+/* --------------------------------------------------------------------------
+ * Check pending transaction timeout expiration
+ * -------------------------------------------------------------------------- */
+static bool pending_timeout_expired(dspic33ak_i2c_instance_t inst)
+{
+    uint32_t now;
+
+    if (g_pending_state[inst] == DSPIC33AK_I2C_PENDING_NONE) {
+        return false;
+    }
+
+    if (!pending_timeout_enabled(inst)) {
+        return false;
+    }
+
+    now = g_get_ms[inst]();
+    return ((uint32_t)(now - g_pending_start_ms[inst]) >=
+            g_pending_timeout_ms[inst]);
+}
+
+/* --------------------------------------------------------------------------
+ * Clear pending transaction state
+ * -------------------------------------------------------------------------- */
+static void pending_clear(dspic33ak_i2c_instance_t inst)
+{
+    if (!inst_is_valid(inst)) {
+        return;
+    }
+
+    g_pending_state[inst] = DSPIC33AK_I2C_PENDING_NONE;
+    g_pending_start_ms[inst] = 0u;
+}
+
+/* --------------------------------------------------------------------------
+ * Set pending transaction state
+ * -------------------------------------------------------------------------- */
+static void pending_set(
+    dspic33ak_i2c_instance_t inst,
+    dspic33ak_i2c_pending_state_t state)
+{
+    if (!inst_is_valid(inst)) {
+        return;
+    }
+
+    g_pending_state[inst] = state;
+    g_pending_start_ms[inst] = pending_timeout_enabled(inst) ?
+                               g_get_ms[inst]() :
+                               0u;
+}
+
+/* --------------------------------------------------------------------------
+ * Recover a stale no-STOP transaction if its pending timeout has elapsed
+ * -------------------------------------------------------------------------- */
+static dspic33ak_i2c_status_t recover_stale_pending_if_needed(
+    dspic33ak_i2c_instance_t inst)
+{
+    dspic33ak_i2c_status_t st;
+
+    st = check_initialized(inst);
+    if (st != DSPIC33AK_I2C_OK) {
+        return st;
+    }
+
+    if (!pending_timeout_expired(inst)) {
+        return DSPIC33AK_I2C_OK;
+    }
+
+    st = stop_quiet(inst);
+    if (st != DSPIC33AK_I2C_OK) {
+        return st;
+    }
+
+    pending_clear(inst);
+    return DSPIC33AK_I2C_ERR_TIMEOUT;
+}
+
+/* --------------------------------------------------------------------------
+ * Public API guard for starting a new non-pending transaction
+ * -------------------------------------------------------------------------- */
+static dspic33ak_i2c_status_t begin_independent_transaction(
+    dspic33ak_i2c_instance_t inst)
+{
+    dspic33ak_i2c_status_t st;
+
+    /*
+     * recover_stale_pending_if_needed() returns ERR_TIMEOUT when it had to
+     * force a stale no-STOP transaction closed.  Propagate it: the caller
+     * must observe that its previous transaction was recovered and retry,
+     * rather than have a fresh transfer silently started in its place.
+     */
+    st = recover_stale_pending_if_needed(inst);
+    if (st != DSPIC33AK_I2C_OK) {
+        return st;
+    }
+
+    if (g_pending_state[inst] != DSPIC33AK_I2C_PENDING_NONE) {
+        return DSPIC33AK_I2C_ERR_BUSY;
+    }
+
+    return DSPIC33AK_I2C_OK;
+}
+
+/* --------------------------------------------------------------------------
+ * Internal master write sequence that intentionally leaves STOP pending
+ * -------------------------------------------------------------------------- */
+static dspic33ak_i2c_status_t write_no_stop_sequence(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t addr7,
+    const uint8_t *tx,
+    size_t tx_len)
+{
+    dspic33ak_i2c_status_t st;
+    size_t i;
+
+    st = start_blocking(inst);
+    if (st != DSPIC33AK_I2C_OK) {
+        (void)stop_quiet(inst);
+        return st;
+    }
+
+    st = send_address_blocking(inst, addr7, false);
+    if (st != DSPIC33AK_I2C_OK) {
+        (void)stop_quiet(inst);
+        return st;
+    }
+
+    for (i = 0u; i < tx_len; i++) {
+        st = write_byte_blocking(inst, tx[i]);
+        if (st != DSPIC33AK_I2C_OK) {
+            (void)stop_quiet(inst);
+            return st;
+        }
+    }
+
+    pending_set(inst, DSPIC33AK_I2C_PENDING_MASTER_WRITE);
+    return DSPIC33AK_I2C_OK;
+}
+
+/* --------------------------------------------------------------------------
+ * Internal repeated START read sequence from a pending write
+ * -------------------------------------------------------------------------- */
+static dspic33ak_i2c_status_t read_after_restart_sequence(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t addr7,
+    uint8_t *rx,
+    size_t rx_len)
+{
+    dspic33ak_i2c_status_t st;
+    size_t i;
+
+    st = restart_blocking(inst);
+    if (st != DSPIC33AK_I2C_OK) {
+        return abort_pending_sequence(inst, st);
+    }
+
+    st = send_address_blocking(inst, addr7, true);
+    if (st != DSPIC33AK_I2C_OK) {
+        return abort_pending_sequence(inst, st);
+    }
+
+    for (i = 0u; i < rx_len; i++) {
+        bool ack = ((i + 1u) < rx_len);
+        st = read_byte_blocking(inst, &rx[i], ack);
+        if (st != DSPIC33AK_I2C_OK) {
+            return abort_pending_sequence(inst, st);
+        }
+    }
+
+    return stop_pending_sequence(inst);
+}
+
+/* --------------------------------------------------------------------------
+ * Internal STOP sequence for a known pending transaction
+ * -------------------------------------------------------------------------- */
+static dspic33ak_i2c_status_t stop_pending_sequence(
+    dspic33ak_i2c_instance_t inst)
+{
+    dspic33ak_i2c_status_t st;
+
+    /*
+     * Clear the pending state only once STOP has actually completed.  If STOP
+     * fails the bus is not cleanly released, so keep the transaction pending:
+     * the next public call is then rejected with ERR_BUSY (or recovered by the
+     * pending timeout) instead of starting a new transfer on a stuck bus.
+     */
+    st = stop_quiet(inst);
+    if (st != DSPIC33AK_I2C_OK) {
+        return st;
+    }
+
+    pending_clear(inst);
+    return DSPIC33AK_I2C_OK;
+}
+
+/* --------------------------------------------------------------------------
+ * Try to STOP after a pending transaction error
+ * -------------------------------------------------------------------------- */
+static dspic33ak_i2c_status_t abort_pending_sequence(
+    dspic33ak_i2c_instance_t inst,
+    dspic33ak_i2c_status_t original_status)
+{
+    dspic33ak_i2c_status_t stop_status;
+
+    /*
+     * Best-effort STOP after a failed transfer.  If STOP itself fails the bus
+     * is not recovered, so surface the STOP error and keep the transaction
+     * pending so the caller can tell that recovery did not complete.  Only on
+     * a clean STOP do we clear the pending state and return the original
+     * transfer error (e.g. ERR_NACK) as the diagnostic result.
+     */
+    stop_status = stop_quiet(inst);
+    if (stop_status != DSPIC33AK_I2C_OK) {
+        return stop_status;
+    }
+
+    pending_clear(inst);
+    return original_status;
 }
 
 /* --------------------------------------------------------------------------
