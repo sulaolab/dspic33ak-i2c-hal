@@ -37,7 +37,8 @@ typedef enum {
     DSPIC33AK_I2C_ERR_NACK,
     DSPIC33AK_I2C_ERR_BUS,
     DSPIC33AK_I2C_ERR_COLLISION,
-    DSPIC33AK_I2C_ERR_UNSUPPORTED
+    DSPIC33AK_I2C_ERR_UNSUPPORTED,
+    DSPIC33AK_I2C_ERR_SEQUENCE
 } dspic33ak_i2c_status_t;
 
 typedef uint32_t (*dspic33ak_i2c_get_ms_fn)(void);
@@ -51,8 +52,13 @@ typedef struct {
      * Optional millisecond tick callback for timeout handling.
      * If get_ms is NULL, timeout handling is disabled.
      * If timeout_ms is 0, timeout handling is also disabled.
+     *
+     * pending_timeout_ms is independent from timeout_ms. If non-zero, a
+     * no-STOP transaction left pending is recovered on the next public
+     * transaction API call after this timeout has elapsed.
      */
     dspic33ak_i2c_get_ms_fn get_ms;
+    uint32_t pending_timeout_ms;
 } dspic33ak_i2c_config_t;
 
 /* Normal blocking API ----------------------------------------------------- */
@@ -61,6 +67,12 @@ dspic33ak_i2c_status_t dspic33ak_i2c_init(
     dspic33ak_i2c_instance_t inst,
     const dspic33ak_i2c_config_t *config);
 
+/*
+ * Deinitialize the selected I2C instance.
+ *
+ * If deinit recovers a stale pending transaction, it may return the recovery
+ * status while still forcing the peripheral off and clearing HAL state.
+ */
 dspic33ak_i2c_status_t dspic33ak_i2c_deinit(
     dspic33ak_i2c_instance_t inst);
 
@@ -90,9 +102,33 @@ dspic33ak_i2c_status_t dspic33ak_i2c_write_read(
     uint8_t *rx,
     size_t rx_len);
 
+/* Master transaction API --------------------------------------------------
+ * These functions expose the STOP-pending sequence needed by CMSIS-Driver
+ * I2C xfer_pending style transfers.
+ */
+
+dspic33ak_i2c_status_t dspic33ak_i2c_master_write_no_stop(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t addr7,
+    const uint8_t *tx,
+    size_t tx_len);
+
+dspic33ak_i2c_status_t dspic33ak_i2c_master_read_after_restart(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t addr7,
+    uint8_t *rx,
+    size_t rx_len);
+
+dspic33ak_i2c_status_t dspic33ak_i2c_master_stop(
+    dspic33ak_i2c_instance_t inst);
+
 /* Low-level primitive API -------------------------------------------------
  * These functions are intentionally small. The blocking API above is built
  * from these issue/check operations.
+ *
+ * The pending transaction guard is applied to normal blocking and master
+ * transaction APIs. Low-level primitive APIs do not enforce pending-state
+ * sequencing.
  *
  * Normal application code should usually use dspic33ak_i2c_write(),
  * dspic33ak_i2c_read(), or dspic33ak_i2c_write_read().

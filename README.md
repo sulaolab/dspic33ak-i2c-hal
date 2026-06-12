@@ -21,6 +21,10 @@ Current validation target:
   - Blocking write-read transaction with repeated START
   - Repeated START using RSEN
   - WM8904 device ID read on I2C2 and I2C3
+  - no-STOP master write transaction
+  - repeated START read after pending write transaction
+  - explicit STOP for pending transaction
+  - pending transaction timeout recovery
 
 ## Design policy
 
@@ -57,18 +61,20 @@ static uint32_t app_get_ms(void)
 void app_i2c_init(void)
 {
     const dspic33ak_i2c_config_t cfg = {
-        .fcy_hz     = 100000000u,
-        .bus_hz     = 400000u,
-        .timeout_ms = 10u,
-        .get_ms     = app_get_ms,
+        .fcy_hz             = 100000000u,
+        .bus_hz             = 400000u,
+        .timeout_ms         = 10u,
+        .get_ms             = app_get_ms,
+        .pending_timeout_ms = 0u,
     };
 
     (void)dspic33ak_i2c_init(DSPIC33AK_I2C_INST_1, &cfg);
 }
 ```
 
-If `get_ms` is `NULL`, timeout handling is disabled.  
+If `get_ms` is `NULL`, timeout handling is disabled.
 If `timeout_ms` is `0`, timeout handling is also disabled.
+If `pending_timeout_ms` is `0`, stale pending transaction recovery is disabled.
 
 ## Blocking write example
 
@@ -104,6 +110,54 @@ uint8_t rx[2];
 
 The write-read API generates a repeated START between the write phase and the
 read phase.
+
+## Pending transaction API
+
+For register-read style transfers, the normal `dspic33ak_i2c_write_read()` API
+is usually sufficient.
+
+For applications that need explicit control over a repeated START sequence, the
+driver also provides a pending transaction API:
+
+```c
+uint8_t reg = 0x00u;
+uint8_t rx[2];
+
+(void)dspic33ak_i2c_master_write_no_stop(DSPIC33AK_I2C_INST_1,
+                                         0x1au,
+                                         &reg,
+                                         1u);
+
+(void)dspic33ak_i2c_master_read_after_restart(DSPIC33AK_I2C_INST_1,
+                                              0x1au,
+                                              rx,
+                                              sizeof(rx));
+```
+
+`dspic33ak_i2c_master_write_no_stop()` starts a master write transaction and
+leaves the bus active without issuing STOP.
+
+`dspic33ak_i2c_master_read_after_restart()` continues the pending write
+transaction by issuing a repeated START, reading data, and then issuing STOP.
+
+If a pending transaction must be terminated without a read phase, call:
+
+```c
+(void)dspic33ak_i2c_master_stop(DSPIC33AK_I2C_INST_1);
+```
+
+The no-STOP transaction API is useful for higher-level wrappers or application
+code that needs to keep the I2C bus active across multiple phases.
+
+## Pending transaction timeout
+
+`pending_timeout_ms` controls stale pending transaction recovery.
+
+If both `get_ms` and `pending_timeout_ms` are valid, a later public HAL call can
+detect an expired pending transaction, attempt to issue STOP, clear the pending
+state, and return `DSPIC33AK_I2C_ERR_TIMEOUT`.
+
+If `pending_timeout_ms` is `0`, pending timeout recovery is disabled.
 
 ## Repeated START
 
@@ -161,7 +215,7 @@ available I2C instance count may differ.
 
 - `LBRG` and `HBRG` are set to the same value for a simple 50% duty-cycle SCL setup.
 - BRG calculation uses 64-bit arithmetic internally to avoid overflow while keeping rounded divider behavior.
-- `dspic33ak_i2c_deinit()` returns `DSPIC33AK_I2C_ERR_BUSY` if the host state machine or command bits indicate an active transfer.
+- `dspic33ak_i2c_deinit()` forces the peripheral off and clears HAL state; if it recovers a stale pending transaction, it may return that recovery status.
 - This repository does not include Microchip DFP header files.
 
 ## License
