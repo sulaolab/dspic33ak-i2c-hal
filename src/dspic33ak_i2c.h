@@ -82,6 +82,20 @@ bool dspic33ak_i2c_is_present(
 bool dspic33ak_i2c_is_initialized(
     dspic33ak_i2c_instance_t inst);
 
+/*
+ * Update the I2C bus speed for an initialized idle instance.
+ *
+ * The selected instance must be initialized and idle. This API updates LBRG
+ * and HBRG using the same BRG calculation as dspic33ak_i2c_init().
+ *
+ * Returns DSPIC33AK_I2C_ERR_BUSY if the host state machine is active or a
+ * no-STOP transaction is pending.
+ */
+dspic33ak_i2c_status_t dspic33ak_i2c_set_bus_speed(
+    dspic33ak_i2c_instance_t inst,
+    uint32_t fcy_hz,
+    uint32_t bus_hz);
+
 dspic33ak_i2c_status_t dspic33ak_i2c_write(
     dspic33ak_i2c_instance_t inst,
     uint8_t addr7,

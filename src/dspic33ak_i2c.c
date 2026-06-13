@@ -75,6 +75,7 @@ static bool write_byte_ready(dspic33ak_i2c_instance_t inst);
 static bool write_byte_done(dspic33ak_i2c_instance_t inst);
 static bool write_data_accepted(dspic33ak_i2c_instance_t inst);
 static bool ack_done(dspic33ak_i2c_instance_t inst);
+static bool stop_fully_done(dspic33ak_i2c_instance_t inst);
 static dspic33ak_i2c_status_t stop_quiet(dspic33ak_i2c_instance_t inst);
 static dspic33ak_i2c_status_t start_blocking(dspic33ak_i2c_instance_t inst);
 static dspic33ak_i2c_status_t restart_blocking(dspic33ak_i2c_instance_t inst);
@@ -198,6 +199,79 @@ dspic33ak_i2c_status_t dspic33ak_i2c_deinit(
     g_initialized[inst] = false;
 
     return st;
+}
+
+/* --------------------------------------------------------------------------
+ * Update bus speed on an initialized idle instance
+ * -------------------------------------------------------------------------- */
+dspic33ak_i2c_status_t dspic33ak_i2c_set_bus_speed(
+    dspic33ak_i2c_instance_t inst,
+    uint32_t fcy_hz,
+    uint32_t bus_hz)
+{
+    const dspic33ak_i2c_regs_t *r;
+    dspic33ak_i2c_status_t st;
+    uint32_t brg;
+    bool was_on;
+
+    if (!inst_is_valid(inst)) {
+        return DSPIC33AK_I2C_ERR_INVALID_ARG;
+    }
+
+    if (fcy_hz == 0u || bus_hz == 0u) {
+        return DSPIC33AK_I2C_ERR_INVALID_ARG;
+    }
+
+    st = require_initialized(inst, &r);
+    if (st != DSPIC33AK_I2C_OK) {
+        return st;
+    }
+
+    /*
+     * Do not run stale pending recovery here.  A pending no-STOP transaction
+     * simply blocks the speed change; recovery stays the responsibility of the
+     * read-after-restart / stop / deinit paths.
+     */
+    if (g_pending_state[inst] != DSPIC33AK_I2C_PENDING_NONE) {
+        return DSPIC33AK_I2C_ERR_BUSY;
+    }
+
+    /*
+     * host_active() only inspects STAT2.HSTACT.  Reject the speed change while
+     * any START / repeated-START / STOP / receive / ACK request bit is still
+     * set or a byte transfer is in progress, mirroring the idle check used by
+     * deinit.
+     */
+    if (host_active(inst) ||
+        dspic33ak_i2c_reg_is_set(r->STAT1, DSPIC33AK_I2C_STAT1_TRSTAT) ||
+        dspic33ak_i2c_reg_is_set(r->CON1,
+                                  DSPIC33AK_I2C_CON1_SEN |
+                                  DSPIC33AK_I2C_CON1_RSEN |
+                                  DSPIC33AK_I2C_CON1_PEN |
+                                  DSPIC33AK_I2C_CON1_RCEN |
+                                  DSPIC33AK_I2C_CON1_ACKEN)) {
+        return DSPIC33AK_I2C_ERR_BUSY;
+    }
+
+    brg = calc_brg(fcy_hz, bus_hz);
+
+    /*
+     * Safe-side update: turn the peripheral off while LBRG/HBRG change, then
+     * restore the previous ON state.
+     */
+    was_on = dspic33ak_i2c_reg_is_set(r->CON1, DSPIC33AK_I2C_CON1_ON);
+    if (was_on) {
+        dspic33ak_i2c_reg_clear(r->CON1, DSPIC33AK_I2C_CON1_ON);
+    }
+
+    *r->LBRG = brg;
+    *r->HBRG = brg;
+
+    if (was_on) {
+        dspic33ak_i2c_reg_set(r->CON1, DSPIC33AK_I2C_CON1_ON);
+    }
+
+    return DSPIC33AK_I2C_OK;
 }
 
 /* --------------------------------------------------------------------------
@@ -1293,6 +1367,31 @@ static bool ack_done(dspic33ak_i2c_instance_t inst)
 }
 
 /* --------------------------------------------------------------------------
+ * Adapter: STOP fully completed condition
+ *
+ * STAT2.STOPE (the STOP event flag) is set slightly before the hardware clears
+ * CON1.PEN (the STOP request bit).  A STOP is only truly finished, and the bus
+ * only actually released, once PEN has returned to 0.  Waiting on STOPE alone
+ * lets the next transaction issue START (SEN) while PEN is still set; the host
+ * ignores SEN during a pending STOP, so START never happens and the transfer
+ * times out.  This is invisible at fast bus speeds (PEN clears within a short
+ * bit period) but reproducibly breaks slow speeds such as 100 kHz.  Require
+ * both STOPE set and PEN clear so callers never start a new transfer on a bus
+ * whose STOP has not yet retired.
+ * -------------------------------------------------------------------------- */
+static bool stop_fully_done(dspic33ak_i2c_instance_t inst)
+{
+    const dspic33ak_i2c_regs_t *r;
+
+    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+        return false;
+    }
+
+    return dspic33ak_i2c_reg_is_set(r->STAT2, DSPIC33AK_I2C_STAT2_STOPE) &&
+           !dspic33ak_i2c_reg_is_set(r->CON1, DSPIC33AK_I2C_CON1_PEN);
+}
+
+/* --------------------------------------------------------------------------
  * Issue STOP and wait quietly
  * -------------------------------------------------------------------------- */
 static dspic33ak_i2c_status_t stop_quiet(dspic33ak_i2c_instance_t inst)
@@ -1304,7 +1403,7 @@ static dspic33ak_i2c_status_t stop_quiet(dspic33ak_i2c_instance_t inst)
         return st;
     }
 
-    return wait_until(inst, dspic33ak_i2c_ll_stop_done, false);
+    return wait_until(inst, stop_fully_done, false);
 }
 
 /* --------------------------------------------------------------------------
