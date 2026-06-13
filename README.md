@@ -10,32 +10,39 @@ driver that is easy to read, test, modify, and adapt.
 
 Current validation target:
 
-- Device: dsPIC33AK512MPS512
-- Compiler: XC-DSC
-- DFP: Microchip dsPIC33AK-MP DFP 1.3.185 or compatible
-- Tested I2C instances: I2C2 and I2C3
-- Tested peripheral: WM8904 audio codec
-- Confirmed operations:
-  - Blocking write
-  - Blocking read
-  - Blocking write-read transaction with repeated START
-  - Repeated START using RSEN
-  - WM8904 device ID read on I2C2 and I2C3
-  - no-STOP master write transaction
-  - repeated START read after pending write transaction
-  - explicit STOP for pending transaction
-  - pending transaction timeout recovery
+* Device: dsPIC33AK512MPS512
+* Compiler: XC-DSC
+* DFP: Microchip dsPIC33AK-MP DFP 1.3.185 or compatible
+* Tested I2C instances: I2C2 and I2C3
+* Tested peripheral: WM8904 audio codec
+* Tested bus speeds: 100 kHz, 150 kHz, 200 kHz, 300 kHz, 400 kHz
+
+Other I2C instances may be available depending on the device mapping, but the
+current hardware validation has been performed on I2C2 and I2C3.
+
+Confirmed operations on the validation target:
+
+* Blocking write
+* Blocking read
+* Blocking write-read transaction with repeated START
+* Repeated START using RSEN
+* WM8904 device ID read on I2C2 and I2C3
+* no-STOP master write transaction
+* repeated START read after pending write transaction
+* explicit STOP for pending transaction
+* pending transaction timeout recovery
+* runtime bus speed change on an initialized idle instance
 
 ## Design policy
 
 This driver is intentionally small.
 
-- Normal API is blocking and simple.
-- Low-level API separates issue and status-check operations.
-- No XC-DSC / DFP bitfield structures are exposed in the public API.
-- Device-specific register symbols are isolated in the device mapping layer.
-- Interrupt helper APIs are reserved, but no interrupt-driven transfer engine is forced.
-- Users can modify the polling waits into RTOS waits or interrupt-flag waits if needed.
+* Normal API is blocking and simple.
+* Low-level API separates issue and status-check operations.
+* No XC-DSC / DFP bitfield structures are exposed in the public API.
+* Device-specific register symbols are isolated in the device mapping layer.
+* Interrupt helper APIs are reserved, but no interrupt-driven transfer engine is forced.
+* Users can modify the polling waits into RTOS waits or interrupt-flag waits if needed.
 
 ## Files
 
@@ -68,13 +75,47 @@ void app_i2c_init(void)
         .pending_timeout_ms = 0u,
     };
 
-    (void)dspic33ak_i2c_init(DSPIC33AK_I2C_INST_1, &cfg);
+    (void)dspic33ak_i2c_init(DSPIC33AK_I2C_INST_2, &cfg);
 }
 ```
 
 If `get_ms` is `NULL`, timeout handling is disabled.
 If `timeout_ms` is `0`, timeout handling is also disabled.
 If `pending_timeout_ms` is `0`, stale pending transaction recovery is disabled.
+
+`addr7` arguments in this HAL are always 7-bit I2C slave addresses. Do not pass
+the R/W bit.
+
+## Runtime bus speed change
+
+The bus speed of an already initialized instance can be changed at runtime:
+
+```c
+(void)dspic33ak_i2c_set_bus_speed(DSPIC33AK_I2C_INST_2,
+                                  100000000u,   /* fcy_hz */
+                                  100000u);     /* bus_hz */
+```
+
+The HAL accepts an arbitrary `bus_hz` value and computes `LBRG` / `HBRG` from
+`fcy_hz`. The currently validated speeds are listed in the Status section. The
+resulting BRG register range is not validated, so the caller is responsible for
+passing an `fcy_hz` / `bus_hz` combination the device can represent.
+
+This API uses the same BRG calculation as `dspic33ak_i2c_init()`. The peripheral
+is briefly turned off (`CON1.ON`) around the BRG write and its previous ON state
+is restored.
+
+The instance must be initialized and idle. The call returns:
+
+* `DSPIC33AK_I2C_ERR_INVALID_ARG` if `inst` is invalid or `fcy_hz` / `bus_hz` is `0`
+* `DSPIC33AK_I2C_ERR_NOT_PRESENT` if the instance does not exist on the device
+* `DSPIC33AK_I2C_ERR_NOT_INITIALIZED` if the instance has not been initialized
+* `DSPIC33AK_I2C_ERR_BUSY` if the host state machine is active or a no-STOP
+  transaction is pending
+* `DSPIC33AK_I2C_OK` on success
+
+It does not run stale pending recovery; recovery stays the responsibility of the
+read-after-restart / stop / deinit paths.
 
 ## Blocking write example
 
@@ -84,13 +125,11 @@ uint8_t tx[2] = {
     0x02u,
 };
 
-(void)dspic33ak_i2c_write(DSPIC33AK_I2C_INST_1,
+(void)dspic33ak_i2c_write(DSPIC33AK_I2C_INST_2,
                           0x48u,
                           tx,
                           sizeof(tx));
 ```
-
-`addr7` is a 7-bit I2C slave address. Do not pass the R/W bit.
 
 ## Blocking write-read example
 
@@ -100,7 +139,7 @@ Typical register read sequence:
 uint8_t reg = 0x00u;
 uint8_t rx[2];
 
-(void)dspic33ak_i2c_write_read(DSPIC33AK_I2C_INST_1,
+(void)dspic33ak_i2c_write_read(DSPIC33AK_I2C_INST_2,
                                0x1au,
                                &reg,
                                1u,
@@ -123,12 +162,12 @@ driver also provides a pending transaction API:
 uint8_t reg = 0x00u;
 uint8_t rx[2];
 
-(void)dspic33ak_i2c_master_write_no_stop(DSPIC33AK_I2C_INST_1,
+(void)dspic33ak_i2c_master_write_no_stop(DSPIC33AK_I2C_INST_2,
                                          0x1au,
                                          &reg,
                                          1u);
 
-(void)dspic33ak_i2c_master_read_after_restart(DSPIC33AK_I2C_INST_1,
+(void)dspic33ak_i2c_master_read_after_restart(DSPIC33AK_I2C_INST_2,
                                               0x1au,
                                               rx,
                                               sizeof(rx));
@@ -143,7 +182,7 @@ transaction by issuing a repeated START, reading data, and then issuing STOP.
 If a pending transaction must be terminated without a read phase, call:
 
 ```c
-(void)dspic33ak_i2c_master_stop(DSPIC33AK_I2C_INST_1);
+(void)dspic33ak_i2c_master_stop(DSPIC33AK_I2C_INST_2);
 ```
 
 The no-STOP transaction API is useful for higher-level wrappers or application
@@ -165,32 +204,52 @@ The low-level repeated START primitive uses the dsPIC33AK `RSEN` request bit.
 
 Completion is checked using both:
 
-- `RSEN` cleared by hardware
-- `STARTE` set by hardware
+* `RSEN` cleared by hardware
+* `STARTE` set by hardware
 
 This keeps the API name and the dsPIC33AK host control bit aligned.
+
+## STOP completion
+
+The low-level `dspic33ak_i2c_ll_stop_done()` primitive reports the hardware
+`STOPE` status directly.
+
+The higher-level blocking STOP path additionally waits for `CON1.PEN` to clear
+before returning. On dsPIC33AK, `STAT2.STOPE` can become set before the STOP
+request bit (`PEN`) is fully cleared. If the next START is requested while
+`PEN` is still set, the host can ignore the START request.
+
+This behavior was reproducible at 100 kHz with back-to-back transfers, so the
+blocking STOP path treats STOP as complete only after both conditions are true:
+
+* `STAT2.STOPE` is set
+* `CON1.PEN` is cleared
 
 ## Low-level primitive API
 
 The blocking API is built from smaller low-level primitives such as:
 
-- `dspic33ak_i2c_ll_start_issue()`
-- `dspic33ak_i2c_ll_restart_issue()`
-- `dspic33ak_i2c_ll_stop_issue()`
-- `dspic33ak_i2c_ll_write_byte_issue()`
-- `dspic33ak_i2c_ll_read_byte_issue()`
-- `dspic33ak_i2c_ll_ack_issue()`
+* `dspic33ak_i2c_ll_start_issue()`
+* `dspic33ak_i2c_ll_restart_issue()`
+* `dspic33ak_i2c_ll_stop_issue()`
+* `dspic33ak_i2c_ll_write_byte_issue()`
+* `dspic33ak_i2c_ll_read_byte_issue()`
+* `dspic33ak_i2c_ll_ack_issue()`
 
 These functions are useful if you want to replace polling loops with your own
 interrupt flags, RTOS waits, or cooperative scheduler waits.
+
+The low-level primitives intentionally expose simple hardware-oriented issue /
+done checks. The normal blocking API adds the extra sequencing needed for safe
+back-to-back transactions.
 
 ## Interrupt helper API
 
 The following APIs are reserved for a future small interrupt helper layer:
 
-- `dspic33ak_i2c_irq_enable()`
-- `dspic33ak_i2c_irq_disable()`
-- `dspic33ak_i2c_irq_clear()`
+* `dspic33ak_i2c_irq_enable()`
+* `dspic33ak_i2c_irq_disable()`
+* `dspic33ak_i2c_irq_clear()`
 
 Current implementation returns:
 
@@ -213,10 +272,13 @@ available I2C instance count may differ.
 
 ## Notes
 
-- `LBRG` and `HBRG` are set to the same value for a simple 50% duty-cycle SCL setup.
-- BRG calculation uses 64-bit arithmetic internally to avoid overflow while keeping rounded divider behavior.
-- `dspic33ak_i2c_deinit()` forces the peripheral off and clears HAL state; if it recovers a stale pending transaction, it may return that recovery status.
-- This repository does not include Microchip DFP header files.
+* `LBRG` and `HBRG` are set to the same value for a simple 50% duty-cycle SCL setup.
+* BRG calculation uses 64-bit arithmetic internally to avoid overflow while keeping rounded divider behavior.
+* Runtime bus speed change requires an initialized idle instance (see [Runtime bus speed change](#runtime-bus-speed-change)).
+* Blocking STOP waits for `CON1.PEN` to clear, not just `STAT2.STOPE` (see [STOP completion](#stop-completion)).
+* `dspic33ak_i2c_deinit()` forces the peripheral off and clears HAL state; if it
+  recovers a stale pending transaction, it may return that recovery status.
+* This repository does not include Microchip DFP header files.
 
 ## License
 
