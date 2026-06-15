@@ -1,6 +1,7 @@
-#include "dspic33ak_i2c.h"
+#include "dspic33ak_i2c_master.h"
 #include "dspic33ak_i2c_device.h"
 #include "dspic33ak_i2c_reg.h"
+#include "dspic33ak_i2c_common.h"
 
 /* --------------------------------------------------------------------------
  * Module state
@@ -27,15 +28,12 @@ static uint32_t g_pending_timeout_ms[DSPIC33AK_I2C_INST_COUNT];
  *   3. Static local helper functions
  * -------------------------------------------------------------------------- */
 
-static bool inst_is_valid(dspic33ak_i2c_instance_t inst);
-static dspic33ak_i2c_status_t get_regs(
-    dspic33ak_i2c_instance_t inst,
-    const dspic33ak_i2c_regs_t **regs);
+/* inst_is_valid / get_regs / calc_brg are shared primitives, declared in
+ * dspic33ak_i2c_common.h and defined in dspic33ak_i2c_common.c. */
 static dspic33ak_i2c_status_t require_initialized(
     dspic33ak_i2c_instance_t inst,
     const dspic33ak_i2c_regs_t **regs);
 static dspic33ak_i2c_status_t check_initialized(dspic33ak_i2c_instance_t inst);
-static uint32_t calc_brg(uint32_t fcy_hz, uint32_t bus_hz);
 static bool timeout_enabled(dspic33ak_i2c_instance_t inst);
 static uint32_t timeout_start_ms(dspic33ak_i2c_instance_t inst);
 static bool timeout_expired(dspic33ak_i2c_instance_t inst, uint32_t start_ms);
@@ -106,7 +104,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_init(
     dspic33ak_i2c_status_t st;
     uint32_t brg;
 
-    if (!inst_is_valid(inst)) {
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
@@ -114,7 +112,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_init(
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
-    st = get_regs(inst, &r);
+    st = dspic33ak_i2c_get_regs(inst, &r);
     if (st != DSPIC33AK_I2C_OK) {
         return st;
     }
@@ -128,7 +126,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_init(
                                    DSPIC33AK_I2C_BITO_BITOTMR_MASK,
                                    76u);
 
-    brg = calc_brg(config->fcy_hz, config->bus_hz);
+    brg = dspic33ak_i2c_calc_brg(config->fcy_hz, config->bus_hz);
 
     /* LBRG and HBRG are equal for a simple 50% duty-cycle SCL setup. */
     *r->LBRG = brg;
@@ -154,11 +152,11 @@ dspic33ak_i2c_status_t dspic33ak_i2c_deinit(
     const dspic33ak_i2c_regs_t *r;
     dspic33ak_i2c_status_t st;
 
-    if (!inst_is_valid(inst)) {
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
-    st = get_regs(inst, &r);
+    st = dspic33ak_i2c_get_regs(inst, &r);
     if (st != DSPIC33AK_I2C_OK) {
         return st;
     }
@@ -214,7 +212,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_set_bus_speed(
     uint32_t brg;
     bool was_on;
 
-    if (!inst_is_valid(inst)) {
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
@@ -253,7 +251,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_set_bus_speed(
         return DSPIC33AK_I2C_ERR_BUSY;
     }
 
-    brg = calc_brg(fcy_hz, bus_hz);
+    brg = dspic33ak_i2c_calc_brg(fcy_hz, bus_hz);
 
     /*
      * Safe-side update: turn the peripheral off while LBRG/HBRG change, then
@@ -274,20 +272,15 @@ dspic33ak_i2c_status_t dspic33ak_i2c_set_bus_speed(
     return DSPIC33AK_I2C_OK;
 }
 
-/* --------------------------------------------------------------------------
- * Check whether I2C instance exists on the selected device
- * -------------------------------------------------------------------------- */
-bool dspic33ak_i2c_is_present(dspic33ak_i2c_instance_t inst)
-{
-    return dspic33ak_i2c_instance_is_present(inst);
-}
+/* dspic33ak_i2c_is_present() is a shared primitive; see
+ * dspic33ak_i2c_common.c. */
 
 /* --------------------------------------------------------------------------
  * Check whether I2C instance has been initialized
  * -------------------------------------------------------------------------- */
 bool dspic33ak_i2c_is_initialized(dspic33ak_i2c_instance_t inst)
 {
-    if (!inst_is_valid(inst)) {
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
         return false;
     }
 
@@ -496,7 +489,7 @@ bool dspic33ak_i2c_ll_start_busy(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -510,7 +503,7 @@ bool dspic33ak_i2c_ll_start_done(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -550,7 +543,7 @@ bool dspic33ak_i2c_ll_restart_busy(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -564,7 +557,7 @@ bool dspic33ak_i2c_ll_restart_done(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -602,7 +595,7 @@ bool dspic33ak_i2c_ll_stop_busy(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -616,7 +609,7 @@ bool dspic33ak_i2c_ll_stop_done(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -653,7 +646,7 @@ bool dspic33ak_i2c_ll_write_byte_busy(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -667,7 +660,7 @@ bool dspic33ak_i2c_ll_write_byte_acked(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -707,7 +700,7 @@ bool dspic33ak_i2c_ll_read_byte_ready(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -728,7 +721,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_ll_read_byte_get(
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
-    st = get_regs(inst, &r);
+    st = dspic33ak_i2c_get_regs(inst, &r);
     if (st != DSPIC33AK_I2C_OK) {
         return st;
     }
@@ -768,7 +761,7 @@ bool dspic33ak_i2c_ll_ack_busy(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -782,7 +775,7 @@ bool dspic33ak_i2c_ll_has_error(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return true;
     }
 
@@ -796,7 +789,7 @@ bool dspic33ak_i2c_ll_has_nack(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return true;
     }
 
@@ -810,7 +803,7 @@ bool dspic33ak_i2c_ll_has_collision(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return true;
     }
 
@@ -859,39 +852,8 @@ dspic33ak_i2c_status_t dspic33ak_i2c_irq_clear(
 /* 3. Static local helper functions                                           */
 /* ========================================================================== */
 
-/* --------------------------------------------------------------------------
- * Validate instance number
- * -------------------------------------------------------------------------- */
-static bool inst_is_valid(dspic33ak_i2c_instance_t inst)
-{
-    return ((unsigned)inst < (unsigned)DSPIC33AK_I2C_INST_COUNT);
-}
-
-/* --------------------------------------------------------------------------
- * Resolve instance to register table
- * -------------------------------------------------------------------------- */
-static dspic33ak_i2c_status_t get_regs(
-    dspic33ak_i2c_instance_t inst,
-    const dspic33ak_i2c_regs_t **regs)
-{
-    const dspic33ak_i2c_device_t *dev;
-
-    if (regs == 0) {
-        return DSPIC33AK_I2C_ERR_INVALID_ARG;
-    }
-
-    if (!inst_is_valid(inst)) {
-        return DSPIC33AK_I2C_ERR_INVALID_ARG;
-    }
-
-    dev = dspic33ak_i2c_get_device(inst);
-    if (dev == 0) {
-        return DSPIC33AK_I2C_ERR_NOT_PRESENT;
-    }
-
-    *regs = &dev->regs;
-    return DSPIC33AK_I2C_OK;
-}
+/* inst_is_valid and get_regs are shared primitives defined in
+ * dspic33ak_i2c_common.c. */
 
 /* --------------------------------------------------------------------------
  * Resolve registers and require initialized state
@@ -902,11 +864,11 @@ static dspic33ak_i2c_status_t require_initialized(
 {
     dspic33ak_i2c_status_t st;
 
-    if (!inst_is_valid(inst)) {
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
         return DSPIC33AK_I2C_ERR_INVALID_ARG;
     }
 
-    st = get_regs(inst, regs);
+    st = dspic33ak_i2c_get_regs(inst, regs);
     if (st != DSPIC33AK_I2C_OK) {
         return st;
     }
@@ -927,37 +889,14 @@ static dspic33ak_i2c_status_t check_initialized(dspic33ak_i2c_instance_t inst)
     return require_initialized(inst, &r);
 }
 
-/* --------------------------------------------------------------------------
- * Calculate BRG value
- * -------------------------------------------------------------------------- */
-static uint32_t calc_brg(uint32_t fcy_hz, uint32_t bus_hz)
-{
-    uint64_t div;
-
-    if (bus_hz == 0u) {
-        return 0u;
-    }
-
-    /*
-     * Round to the nearest divider while using 64-bit arithmetic to avoid
-     * uint32_t overflow in fcy_hz + bus_hz on future faster devices.
-     */
-    div = ((uint64_t)fcy_hz + (uint64_t)bus_hz) /
-          (2ull * (uint64_t)bus_hz);
-
-    if (div == 0ull) {
-        return 0u;
-    }
-
-    return (uint32_t)(div - 1ull);
-}
+/* calc_brg is a shared primitive defined in dspic33ak_i2c_common.c. */
 
 /* --------------------------------------------------------------------------
  * Check whether timeout is enabled
  * -------------------------------------------------------------------------- */
 static bool timeout_enabled(dspic33ak_i2c_instance_t inst)
 {
-    return inst_is_valid(inst) &&
+    return dspic33ak_i2c_inst_is_valid(inst) &&
            (g_get_ms[inst] != 0) &&
            (g_timeout_ms[inst] != 0u);
 }
@@ -994,7 +933,7 @@ static bool timeout_expired(dspic33ak_i2c_instance_t inst, uint32_t start_ms)
  * -------------------------------------------------------------------------- */
 static bool pending_timeout_enabled(dspic33ak_i2c_instance_t inst)
 {
-    return inst_is_valid(inst) &&
+    return dspic33ak_i2c_inst_is_valid(inst) &&
            (g_get_ms[inst] != 0) &&
            (g_pending_timeout_ms[inst] != 0u);
 }
@@ -1024,7 +963,7 @@ static bool pending_timeout_expired(dspic33ak_i2c_instance_t inst)
  * -------------------------------------------------------------------------- */
 static void pending_clear(dspic33ak_i2c_instance_t inst)
 {
-    if (!inst_is_valid(inst)) {
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
         return;
     }
 
@@ -1039,7 +978,7 @@ static void pending_set(
     dspic33ak_i2c_instance_t inst,
     dspic33ak_i2c_pending_state_t state)
 {
-    if (!inst_is_valid(inst)) {
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
         return;
     }
 
@@ -1313,7 +1252,7 @@ static bool host_active(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -1351,7 +1290,7 @@ static bool write_data_accepted(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 
@@ -1383,7 +1322,7 @@ static bool stop_fully_done(dspic33ak_i2c_instance_t inst)
 {
     const dspic33ak_i2c_regs_t *r;
 
-    if (get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
+    if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return false;
     }
 

@@ -1,10 +1,20 @@
 # dspic33ak-i2c-hal
 
-Small, readable blocking I2C HAL for Microchip dsPIC33AK devices.
+Small, readable I2C HAL for Microchip dsPIC33AK devices, with both a blocking
+**master** API and an interrupt-driven, callback-based **slave** API.
 
 This project is intended as a compact alternative to large generated driver code.
 The goal is not to hide everything behind a framework, but to provide a simple
 driver that is easy to read, test, modify, and adapt.
+
+The master and slave roles live in separate headers so a program includes only
+what it uses:
+
+* `dspic33ak_i2c_master.h` — bus-master API (include for master use)
+* `dspic33ak_i2c_slave.h` — slave/device API (include for slave use)
+* `dspic33ak_i2c.h` — shared types and lifecycle, pulled in by both
+
+A program may include either or both.
 
 ## Status
 
@@ -32,6 +42,9 @@ Confirmed operations on the validation target:
 * explicit STOP for pending transaction
 * pending transaction timeout recovery
 * runtime bus speed change on an initialized idle instance
+* 7-bit slave: address match, master-write reception, master-read transmission,
+  and STOP detection, validated with an I2C2-master ↔ I2C3-slave (0x55)
+  loopback round trip (master Write then Read)
 
 ## Design policy
 
@@ -48,17 +61,26 @@ This driver is intentionally small.
 
 ```text
 src/
-  dspic33ak_i2c.c
-  dspic33ak_i2c.h
-  dspic33ak_i2c_device.c
+  dspic33ak_i2c.h          shared types + lifecycle (is_present / is_initialized / deinit)
+  dspic33ak_i2c_master.h   master config + blocking / low-level / irq API
+  dspic33ak_i2c_slave.h    slave config (callbacks) + slave API
+  dspic33ak_i2c_master.c   master engine
+  dspic33ak_i2c_slave.c    slave interrupt engine
+  dspic33ak_i2c_common.c   shared primitives (instance validation, register
+                           resolution, BRG calc, presence)
+  dspic33ak_i2c_common.h
+  dspic33ak_i2c_device.c   device register mapping
   dspic33ak_i2c_device.h
-  dspic33ak_i2c_reg.h
+  dspic33ak_i2c_reg.h      internal register/bit definitions
 ```
 
-## Basic usage
+Every `.c` has a paired `.h`; `dspic33ak_i2c.h` and `dspic33ak_i2c_reg.h` are
+header-only.
+
+## Basic usage (master)
 
 ```c
-#include "dspic33ak_i2c.h"
+#include "dspic33ak_i2c_master.h"
 
 static uint32_t app_get_ms(void)
 {
@@ -224,6 +246,68 @@ blocking STOP path treats STOP as complete only after both conditions are true:
 
 * `STAT2.STOPE` is set
 * `CON1.PEN` is cleared
+
+## I2C slave (device) mode
+
+Include `dspic33ak_i2c_slave.h` to answer as an I2C slave. The slave is
+interrupt-driven and callback-based, and supports 7-bit addressing.
+
+```c
+#include "dspic33ak_i2c_slave.h"
+
+static uint8_t reg_file[8];
+static uint8_t rx_idx, tx_idx;
+
+static void on_addr(bool is_read) { if (is_read) tx_idx = 0; else rx_idx = 0; }
+static void on_rx(uint8_t b)      { if (rx_idx < sizeof reg_file) reg_file[rx_idx++] = b; }
+static uint8_t on_tx(void)        { return (tx_idx < sizeof reg_file) ? reg_file[tx_idx++] : 0xFF; }
+static void on_stop(void)         { /* transaction complete */ }
+
+void app_i2c_slave_init(void)
+{
+    const dspic33ak_i2c_slave_config_t cfg = {
+        .addr7         = 0x55u,
+        .addr_mask     = 0u,      /* 0 = exact address match */
+        .clock_stretch = false,   /* STREN: hold SCL for slower callbacks */
+        .on_addr_match = on_addr,
+        .on_rx_byte    = on_rx,
+        .on_tx_byte    = on_tx,
+        .on_stop       = on_stop,
+    };
+    (void)dspic33ak_i2c_slave_init(DSPIC33AK_I2C_INST_3, &cfg);
+}
+```
+
+The application owns the three I2C interrupt vectors and forwards each to the
+matching slave handler (the same pattern used for other interrupt-driven HALs
+in this family). The HAL enables the interrupt sources; the application sets
+their priority (a priority of 0 leaves them masked):
+
+```c
+/* once, before/around dspic33ak_i2c_slave_init(): */
+_I2C3IP = 4; _I2C3RXIP = 4; _I2C3TXIP = 4;
+
+void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3Interrupt(void)
+{ dspic33ak_i2c_slave_event_irq(DSPIC33AK_I2C_INST_3); }
+void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3RXInterrupt(void)
+{ dspic33ak_i2c_slave_rx_irq(DSPIC33AK_I2C_INST_3); }
+void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3TXInterrupt(void)
+{ dspic33ak_i2c_slave_tx_irq(DSPIC33AK_I2C_INST_3); }
+```
+
+Callback contract:
+
+* `on_addr_match(is_read)` — the master addressed this device. `is_read` is
+  true when the master will read from us (we transmit via `on_tx_byte`), false
+  when it will write to us (bytes arrive at `on_rx_byte`).
+* `on_rx_byte(b)` — one received byte (master write).
+* `on_tx_byte()` — return the next byte to transmit (master read); `0xFF` is
+  sent if this is `NULL`.
+* `on_stop()` — the transaction ended.
+
+Callbacks run in interrupt context, so keep them short. With
+`clock_stretch = true` the slave holds SCL (via `STREN`/`SCLREL`) to give the
+callbacks more time. 10-bit addressing and general call are not handled yet.
 
 ## Low-level primitive API
 

@@ -23,6 +23,12 @@ static const dspic33ak_i2c_device_t g_i2c_devices[DSPIC33AK_I2C_INST_COUNT] = {
             .HBRG = &I2C1HBRG,
             .TRN = &I2C1TRN,
             .RCV = &I2C1RCV,
+            .ADD = &I2C1ADD,
+            .MSK = &I2C1MSK,
+            .INTC = &I2C1INTC,
+            .irq_event = { &IFS2, &IEC2, 0x00400000UL },  /* I2C1IF   IFS2<22> */
+            .irq_rx    = { &IFS2, &IEC2, 0x00800000UL },  /* I2C1RXIF IFS2<23> */
+            .irq_tx    = { &IFS2, &IEC2, 0x01000000UL },  /* I2C1TXIF IFS2<24> */
         },
     },
 #else
@@ -42,6 +48,12 @@ static const dspic33ak_i2c_device_t g_i2c_devices[DSPIC33AK_I2C_INST_COUNT] = {
             .HBRG = &I2C2HBRG,
             .TRN = &I2C2TRN,
             .RCV = &I2C2RCV,
+            .ADD = &I2C2ADD,
+            .MSK = &I2C2MSK,
+            .INTC = &I2C2INTC,
+            .irq_event = { &IFS2, &IEC2, 0x04000000UL },  /* I2C2IF   IFS2<26> */
+            .irq_rx    = { &IFS2, &IEC2, 0x08000000UL },  /* I2C2RXIF IFS2<27> */
+            .irq_tx    = { &IFS2, &IEC2, 0x10000000UL },  /* I2C2TXIF IFS2<28> */
         },
     },
 #else
@@ -61,6 +73,12 @@ static const dspic33ak_i2c_device_t g_i2c_devices[DSPIC33AK_I2C_INST_COUNT] = {
             .HBRG = &I2C3HBRG,
             .TRN = &I2C3TRN,
             .RCV = &I2C3RCV,
+            .ADD = &I2C3ADD,
+            .MSK = &I2C3MSK,
+            .INTC = &I2C3INTC,
+            .irq_event = { &IFS2, &IEC2, 0x40000000UL },  /* I2C3IF   IFS2<30> */
+            .irq_rx    = { &IFS2, &IEC2, 0x80000000UL },  /* I2C3RXIF IFS2<31> */
+            .irq_tx    = { &IFS3, &IEC3, 0x00000001UL },  /* I2C3TXIF IFS3<0>  */
         },
     },
 #else
