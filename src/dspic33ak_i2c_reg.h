@@ -19,6 +19,19 @@
  * readable I2C driver.
  */
 
+/*
+ * One interrupt source (event / RX / TX). The dsPIC33A I2C peripheral has three
+ * separate interrupts. The flag (IFSx) and enable (IECx) bits share the same
+ * bit position, so a single mask covers both registers. The register pointers
+ * are kept per-source because an instance's three flags can span two IFS/IEC
+ * words (e.g. I2C3: event/RX in IFS2 but TX in IFS3).
+ */
+typedef struct {
+    volatile uint32_t *ifs;    /* interrupt flag register   (IFSx) */
+    volatile uint32_t *iec;    /* interrupt enable register (IECx) */
+    uint32_t           mask;   /* bit position, shared by IFS/IEC  */
+} dspic33ak_i2c_irq_t;
+
 typedef struct {
     volatile uint32_t *CON1;
     volatile uint32_t *CON2;
@@ -29,6 +42,12 @@ typedef struct {
     volatile uint32_t *HBRG;
     volatile uint32_t *TRN;
     volatile uint32_t *RCV;
+    volatile uint32_t *ADD;    /* slave own-address (I2CxADD) */
+    volatile uint32_t *MSK;    /* slave address mask (I2CxMSK) */
+    volatile uint32_t *INTC;   /* interrupt control (I2CxINTC) */
+    dspic33ak_i2c_irq_t irq_event;
+    dspic33ak_i2c_irq_t irq_rx;
+    dspic33ak_i2c_irq_t irq_tx;
 } dspic33ak_i2c_regs_t;
 
 /* I2CxCON1 bits */
@@ -38,7 +57,17 @@ typedef struct {
 #define DSPIC33AK_I2C_CON1_RCEN     (1UL << 3)   /* I2CxCON1bits.RCEN */
 #define DSPIC33AK_I2C_CON1_ACKEN    (1UL << 4)   /* I2CxCON1bits.ACKEN */
 #define DSPIC33AK_I2C_CON1_ACKDT    (1UL << 5)   /* I2CxCON1bits.ACKDT */
+#define DSPIC33AK_I2C_CON1_STREN    (1UL << 6)   /* I2CxCON1bits.STREN  (slave clock stretch) */
+#define DSPIC33AK_I2C_CON1_GCEN     (1UL << 7)   /* I2CxCON1bits.GCEN   (general-call enable) */
+#define DSPIC33AK_I2C_CON1_A10M     (1UL << 10)  /* I2CxCON1bits.A10M   (10-bit own address) */
+#define DSPIC33AK_I2C_CON1_STRICT   (1UL << 11)  /* I2CxCON1bits.STRICT */
+#define DSPIC33AK_I2C_CON1_SCLREL   (1UL << 12)  /* I2CxCON1bits.SCLREL (release clock) */
 #define DSPIC33AK_I2C_CON1_ON       (1UL << 15)  /* I2CxCON1bits.ON */
+#define DSPIC33AK_I2C_CON1_DHEN     (1UL << 16)  /* I2CxCON1bits.DHEN   (data hold) */
+#define DSPIC33AK_I2C_CON1_AHEN     (1UL << 17)  /* I2CxCON1bits.AHEN   (address hold) */
+#define DSPIC33AK_I2C_CON1_BOEN     (1UL << 20)  /* I2CxCON1bits.BOEN   (buffer overwrite) */
+#define DSPIC33AK_I2C_CON1_SCIE     (1UL << 21)  /* I2CxCON1bits.SCIE   (START int, client) */
+#define DSPIC33AK_I2C_CON1_PCIE     (1UL << 22)  /* I2CxCON1bits.PCIE   (STOP int, client)  */
 
 /* I2CxCON2 bits */
 #define DSPIC33AK_I2C_CON2_BITE     (1UL << 16)  /* I2CxCON2bits.BITE */
@@ -46,13 +75,28 @@ typedef struct {
 /* I2CxSTAT1 bits */
 #define DSPIC33AK_I2C_STAT1_TBF     (1UL << 0)   /* I2CxSTAT1bits.TBF */
 #define DSPIC33AK_I2C_STAT1_RBF     (1UL << 1)   /* I2CxSTAT1bits.RBF */
-#define DSPIC33AK_I2C_STAT1_S       (1UL << 3)   /* I2CxSTAT1bits.S */
-#define DSPIC33AK_I2C_STAT1_D_A     (1UL << 5)   /* I2CxSTAT1bits.D_A */
+#define DSPIC33AK_I2C_STAT1_R_W     (1UL << 2)   /* I2CxSTAT1bits.R_W  (slave: last addr was read) */
+#define DSPIC33AK_I2C_STAT1_S       (1UL << 3)   /* I2CxSTAT1bits.S    (START detected) */
+#define DSPIC33AK_I2C_STAT1_P       (1UL << 4)   /* I2CxSTAT1bits.P    (STOP detected) */
+#define DSPIC33AK_I2C_STAT1_D_A     (1UL << 5)   /* I2CxSTAT1bits.D_A  (0=address, 1=data) */
+#define DSPIC33AK_I2C_STAT1_ADD10   (1UL << 8)   /* I2CxSTAT1bits.ADD10 */
+#define DSPIC33AK_I2C_STAT1_GCSTAT  (1UL << 9)   /* I2CxSTAT1bits.GCSTAT (general call) */
 #define DSPIC33AK_I2C_STAT1_I2COV   (1UL << 6)   /* I2CxSTAT1bits.I2COV */
 #define DSPIC33AK_I2C_STAT1_IWCOL   (1UL << 7)   /* I2CxSTAT1bits.IWCOL */
 #define DSPIC33AK_I2C_STAT1_BCL     (1UL << 10)  /* I2CxSTAT1bits.BCL */
 #define DSPIC33AK_I2C_STAT1_TRSTAT  (1UL << 14)  /* I2CxSTAT1bits.TRSTAT */
 #define DSPIC33AK_I2C_STAT1_ACKSTAT (1UL << 15)  /* I2CxSTAT1bits.ACKSTAT */
+
+/* I2CxINTC bits (interrupt routing). In Client mode the address/data/stop
+ * conditions are aggregated into CLIIF and reach the event interrupt I2CxIF
+ * only when CLTIE is set; CADDRIE/CDRXIE pull address-match / RBF into CLIIF.
+ * RXIE/TXIE instead route RBF/TBF to the separate I2CxRXIF/I2CxTXIF vectors. */
+#define DSPIC33AK_I2C_INTC_CDTXIE   (1UL << 3)   /* client data TX -> int */
+#define DSPIC33AK_I2C_INTC_CDRXIE   (1UL << 4)   /* RBF=1 contributes to CLIIF */
+#define DSPIC33AK_I2C_INTC_TXIE     (1UL << 6)   /* TBF=0 -> I2CxTXIF */
+#define DSPIC33AK_I2C_INTC_RXIE     (1UL << 7)   /* RBF=1 -> I2CxRXIF */
+#define DSPIC33AK_I2C_INTC_CADDRIE  (1UL << 10)  /* address detect -> CLIIF */
+#define DSPIC33AK_I2C_INTC_CLTIE    (1UL << 12)  /* CLIIF -> I2CxIF (client gate) */
 
 /* I2CxSTAT2 bits */
 #define DSPIC33AK_I2C_STAT2_ERR     (1UL << 11)  /* I2CxSTAT2bits.ERR */
@@ -90,6 +134,27 @@ static inline void dspic33ak_i2c_reg_write_field(
     uint32_t value)
 {
     *reg = (*reg & ~mask) | (value & mask);
+}
+
+/* Interrupt source helpers (event / RX / TX). */
+static inline void dspic33ak_i2c_reg_irq_enable(const dspic33ak_i2c_irq_t *irq)
+{
+    *irq->iec |= irq->mask;
+}
+
+static inline void dspic33ak_i2c_reg_irq_disable(const dspic33ak_i2c_irq_t *irq)
+{
+    *irq->iec &= ~irq->mask;
+}
+
+static inline void dspic33ak_i2c_reg_irq_clear(const dspic33ak_i2c_irq_t *irq)
+{
+    *irq->ifs &= ~irq->mask;
+}
+
+static inline bool dspic33ak_i2c_reg_irq_is_set(const dspic33ak_i2c_irq_t *irq)
+{
+    return ((*irq->ifs & irq->mask) != 0u);
 }
 
 #endif /* DSPIC33AK_I2C_REG_H */
