@@ -64,8 +64,8 @@ dspic33ak_i2c_status_t dspic33ak_i2c_slave_init(
 
     /* Classic client mode: 7-bit (A10M=0), no host request bits, no smart/FIFO
      * features. PCIE makes a STOP feed the client interrupt (CLIIF). */
-    *r->CON1 = DSPIC33AK_I2C_CON1_PCIE;
-    *r->CON2 = 0x00000001u;        /* PSZ = 1: one byte per packet */
+    dspic33ak_i2c_reg_write(r->CON1, DSPIC33AK_I2C_CON1_PCIE);
+    dspic33ak_i2c_reg_write(r->CON2, DSPIC33AK_I2C_CON2_PSZ_1_BYTE);
 
     /* Route every client condition to the event interrupt I2CxIF: address-match
      * (CADDRIE), received byte (CDRXIE) and the "send next byte" request after a
