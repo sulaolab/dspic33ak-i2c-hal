@@ -11,13 +11,15 @@ extern "C" {
 /*
  * Internal shared helpers used by both the master and slave engines.
  *
- * These are intentionally pure (no module state):
+ * Pure resolution helpers (no module state):
  *   - inst_is_valid : range-check the instance enum
  *   - get_regs      : resolve an instance to its register pointer table
  *   - calc_brg      : compute the LBRG/HBRG divider from fcy/bus rates
  *
- * The master- and slave-specific state and engines live in their own
- * translation units and include this header to share these primitives.
+ * Plus the shared per-instance role/lifecycle state (set_role / get_role and
+ * the public is_initialized), which the master and slave engines update so a
+ * single query reflects either role. The engines' own per-instance state lives
+ * in their respective translation units.
  */
 
 bool dspic33ak_i2c_inst_is_valid(dspic33ak_i2c_instance_t inst);
@@ -27,6 +29,22 @@ dspic33ak_i2c_status_t dspic33ak_i2c_get_regs(
     const dspic33ak_i2c_regs_t **regs);
 
 uint32_t dspic33ak_i2c_calc_brg(uint32_t fcy_hz, uint32_t bus_hz);
+
+/*
+ * Shared per-instance role/lifecycle state. The master and slave engines set
+ * this on init/deinit so the common dspic33ak_i2c_is_initialized() reports the
+ * truth for either role (the engines keep their own internal state separately,
+ * and neither references the other).
+ */
+typedef enum {
+    DSPIC33AK_I2C_ROLE_NONE = 0,
+    DSPIC33AK_I2C_ROLE_MASTER,
+    DSPIC33AK_I2C_ROLE_SLAVE
+} dspic33ak_i2c_role_t;
+
+void dspic33ak_i2c_set_role(dspic33ak_i2c_instance_t inst,
+                            dspic33ak_i2c_role_t role);
+dspic33ak_i2c_role_t dspic33ak_i2c_get_role(dspic33ak_i2c_instance_t inst);
 
 #ifdef __cplusplus
 }

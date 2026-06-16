@@ -4,11 +4,13 @@
 #include "dspic33ak_i2c_common.h"
 
 /* --------------------------------------------------------------------------
- * Shared primitives used by both the master and slave engines.
+ * Shared helpers used by both the master and slave engines.
  *
- * Nothing here keeps module state; per-instance state (initialized flag,
- * timeout configuration, pending-transaction tracking, slave callbacks)
- * lives in the master and slave translation units.
+ * The resolution helpers (inst_is_valid / get_regs / calc_brg / is_present) are
+ * pure. The only module state here is the per-instance role (set by the master
+ * and slave engines on init/deinit) behind dspic33ak_i2c_is_initialized(); the
+ * engines' own per-instance state (timeout config, pending tracking, slave
+ * callbacks) still lives in their respective translation units.
  * -------------------------------------------------------------------------- */
 
 /* --------------------------------------------------------------------------
@@ -76,4 +78,37 @@ uint32_t dspic33ak_i2c_calc_brg(uint32_t fcy_hz, uint32_t bus_hz)
 bool dspic33ak_i2c_is_present(dspic33ak_i2c_instance_t inst)
 {
     return dspic33ak_i2c_instance_is_present(inst);
+}
+
+/* --------------------------------------------------------------------------
+ * Shared role / lifecycle state
+ *
+ * The master and slave engines record their role here on init/deinit so the
+ * public dspic33ak_i2c_is_initialized() reflects either role. This is the only
+ * module state in the common layer.
+ * -------------------------------------------------------------------------- */
+static dspic33ak_i2c_role_t g_role[DSPIC33AK_I2C_INST_COUNT];
+
+void dspic33ak_i2c_set_role(dspic33ak_i2c_instance_t inst,
+                            dspic33ak_i2c_role_t role)
+{
+    if (dspic33ak_i2c_inst_is_valid(inst)) {
+        g_role[inst] = role;
+    }
+}
+
+dspic33ak_i2c_role_t dspic33ak_i2c_get_role(dspic33ak_i2c_instance_t inst)
+{
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
+        return DSPIC33AK_I2C_ROLE_NONE;
+    }
+    return g_role[inst];
+}
+
+/* --------------------------------------------------------------------------
+ * Initialized query (true once init'd as either master or slave)
+ * -------------------------------------------------------------------------- */
+bool dspic33ak_i2c_is_initialized(dspic33ak_i2c_instance_t inst)
+{
+    return (dspic33ak_i2c_get_role(inst) != DSPIC33AK_I2C_ROLE_NONE);
 }
