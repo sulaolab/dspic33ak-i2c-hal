@@ -117,8 +117,9 @@ dspic33ak_i2c_status_t dspic33ak_i2c_init(
         return st;
     }
 
-    *r->CON1 = 0x00001000u;
-    *r->CON2 = 0x00000001u;
+    /* Start from a known disabled state; enable after configuration is complete. */
+    dspic33ak_i2c_reg_write(r->CON1, 0u);
+    dspic33ak_i2c_reg_write(r->CON2, DSPIC33AK_I2C_CON2_PSZ_1_BYTE);
     clear_transfer_status(r);
 
     dspic33ak_i2c_reg_set(r->CON2, DSPIC33AK_I2C_CON2_BITE);

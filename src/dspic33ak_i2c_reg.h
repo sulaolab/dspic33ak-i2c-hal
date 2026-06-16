@@ -70,6 +70,7 @@ typedef struct {
 #define DSPIC33AK_I2C_CON1_PCIE     (1UL << 22)  /* I2CxCON1bits.PCIE   (STOP int, client)  */
 
 /* I2CxCON2 bits */
+#define DSPIC33AK_I2C_CON2_PSZ_1_BYTE (1UL)       /* I2CxCON2bits.PSZ = 1 */
 #define DSPIC33AK_I2C_CON2_BITE     (1UL << 16)  /* I2CxCON2bits.BITE */
 
 /* I2CxSTAT1 bits */
@@ -121,6 +122,11 @@ static inline void dspic33ak_i2c_reg_set(volatile uint32_t *reg, uint32_t mask)
 static inline void dspic33ak_i2c_reg_clear(volatile uint32_t *reg, uint32_t mask)
 {
     *reg &= ~mask;
+}
+
+static inline void dspic33ak_i2c_reg_write(volatile uint32_t *reg, uint32_t value)
+{
+    *reg = value;
 }
 
 static inline bool dspic33ak_i2c_reg_is_set(volatile uint32_t *reg, uint32_t mask)
