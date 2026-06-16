@@ -4,11 +4,13 @@
 #include "dspic33ak_i2c_common.h"
 
 /* --------------------------------------------------------------------------
- * Shared primitives used by both the master and slave engines.
+ * Shared helpers used by both the master and slave engines.
  *
- * Nothing here keeps module state; per-instance state (initialized flag,
- * timeout configuration, pending-transaction tracking, slave callbacks)
- * lives in the master and slave translation units.
+ * The resolution helpers (inst_is_valid / get_regs / calc_brg / is_present) are
+ * pure. The only module state here is the per-instance role (set by the master
+ * and slave engines on init/deinit) behind dspic33ak_i2c_is_initialized(); the
+ * engines' own per-instance state (timeout config, pending tracking, slave
+ * callbacks) still lives in their respective translation units.
  * -------------------------------------------------------------------------- */
 
 /* --------------------------------------------------------------------------

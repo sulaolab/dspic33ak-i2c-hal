@@ -118,6 +118,14 @@ dspic33ak_i2c_status_t dspic33ak_i2c_slave_deinit(dspic33ak_i2c_instance_t inst)
         return st;
     }
 
+    /* As in slave_init: an instance without slave register mappings was never
+     * (and cannot be) a slave, so there is nothing to tear down. Guard against
+     * dereferencing the NULL irq/INTC pointers such an instance would carry. */
+    if (r->ADD == 0 || r->MSK == 0 || r->INTC == 0 ||
+        r->irq_event.ifs == 0 || r->irq_event.iec == 0) {
+        return DSPIC33AK_I2C_ERR_NOT_PRESENT;
+    }
+
     dspic33ak_i2c_reg_irq_disable(&r->irq_event);
     dspic33ak_i2c_reg_irq_disable(&r->irq_rx);
     dspic33ak_i2c_reg_irq_disable(&r->irq_tx);
