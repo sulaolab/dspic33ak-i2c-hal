@@ -28,6 +28,22 @@ dspic33ak_i2c_status_t dspic33ak_i2c_get_regs(
 
 uint32_t dspic33ak_i2c_calc_brg(uint32_t fcy_hz, uint32_t bus_hz);
 
+/*
+ * Shared per-instance role/lifecycle state. The master and slave engines set
+ * this on init/deinit so the common dspic33ak_i2c_is_initialized() reports the
+ * truth for either role (the engines keep their own internal state separately,
+ * and neither references the other).
+ */
+typedef enum {
+    DSPIC33AK_I2C_ROLE_NONE = 0,
+    DSPIC33AK_I2C_ROLE_MASTER,
+    DSPIC33AK_I2C_ROLE_SLAVE
+} dspic33ak_i2c_role_t;
+
+void dspic33ak_i2c_set_role(dspic33ak_i2c_instance_t inst,
+                            dspic33ak_i2c_role_t role);
+dspic33ak_i2c_role_t dspic33ak_i2c_get_role(dspic33ak_i2c_instance_t inst);
+
 #ifdef __cplusplus
 }
 #endif

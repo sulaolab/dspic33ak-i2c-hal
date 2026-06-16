@@ -137,6 +137,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_init(
     g_pending_timeout_ms[inst] = config->pending_timeout_ms;
     pending_clear(inst);
     g_initialized[inst] = true;
+    dspic33ak_i2c_set_role(inst, DSPIC33AK_I2C_ROLE_MASTER);
 
     dspic33ak_i2c_reg_set(r->CON1, DSPIC33AK_I2C_CON1_ON);
 
@@ -195,6 +196,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_deinit(
     g_pending_timeout_ms[inst] = 0u;
     pending_clear(inst);
     g_initialized[inst] = false;
+    dspic33ak_i2c_set_role(inst, DSPIC33AK_I2C_ROLE_NONE);
 
     return st;
 }
@@ -272,20 +274,9 @@ dspic33ak_i2c_status_t dspic33ak_i2c_set_bus_speed(
     return DSPIC33AK_I2C_OK;
 }
 
-/* dspic33ak_i2c_is_present() is a shared primitive; see
- * dspic33ak_i2c_common.c. */
-
-/* --------------------------------------------------------------------------
- * Check whether I2C instance has been initialized
- * -------------------------------------------------------------------------- */
-bool dspic33ak_i2c_is_initialized(dspic33ak_i2c_instance_t inst)
-{
-    if (!dspic33ak_i2c_inst_is_valid(inst)) {
-        return false;
-    }
-
-    return g_initialized[inst];
-}
+/* dspic33ak_i2c_is_present() and dspic33ak_i2c_is_initialized() are shared;
+ * see dspic33ak_i2c_common.c (is_initialized reflects the master OR slave
+ * role recorded via dspic33ak_i2c_set_role()). */
 
 /* --------------------------------------------------------------------------
  * Blocking write transaction

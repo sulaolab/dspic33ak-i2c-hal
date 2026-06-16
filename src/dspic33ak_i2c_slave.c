@@ -49,6 +49,16 @@ dspic33ak_i2c_status_t dspic33ak_i2c_slave_init(
         return st;
     }
 
+    /* The slave engine needs the slave-only registers (ADD/MSK/INTC) and the
+     * event interrupt descriptor. An instance whose device table entry only
+     * maps the master registers (e.g. an I2Cx that exists but was not given
+     * slave mappings) must not be driven as a slave - that would dereference
+     * NULL. Reject it instead. */
+    if (r->ADD == 0 || r->MSK == 0 || r->INTC == 0 ||
+        r->irq_event.ifs == 0 || r->irq_event.iec == 0) {
+        return DSPIC33AK_I2C_ERR_NOT_PRESENT;
+    }
+
     /* Configure with the module disabled. */
     dspic33ak_i2c_reg_clear(r->CON1, DSPIC33AK_I2C_CON1_ON);
 
@@ -80,6 +90,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_slave_init(
     g_cfg[inst]     = *config;
     g_reading[inst] = false;
     g_active[inst]  = true;
+    dspic33ak_i2c_set_role(inst, DSPIC33AK_I2C_ROLE_SLAVE);
 
     /* All client activity (address / RX / TX-continue / STOP) is aggregated
      * into the single event interrupt via INTC above, so only that vector is
@@ -115,6 +126,7 @@ dspic33ak_i2c_status_t dspic33ak_i2c_slave_deinit(dspic33ak_i2c_instance_t inst)
 
     g_active[inst]  = false;
     g_reading[inst] = false;
+    dspic33ak_i2c_set_role(inst, DSPIC33AK_I2C_ROLE_NONE);
 
     return DSPIC33AK_I2C_OK;
 }
@@ -197,7 +209,10 @@ static void slave_service(dspic33ak_i2c_instance_t inst,
 }
 
 /* --------------------------------------------------------------------------
- * ISR delegates: each services the peripheral then clears its own flag.
+ * ISR delegates: each clears its own flag *before* servicing, so a new event
+ * raised while servicing (the master can resume the moment we release SCLREL)
+ * keeps its flag set and re-enters rather than being cleared away. The service
+ * routine is idempotent, so a spurious re-entry is harmless.
  * -------------------------------------------------------------------------- */
 void dspic33ak_i2c_slave_event_irq(dspic33ak_i2c_instance_t inst)
 {
@@ -206,10 +221,10 @@ void dspic33ak_i2c_slave_event_irq(dspic33ak_i2c_instance_t inst)
     if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return;
     }
+    dspic33ak_i2c_reg_irq_clear(&r->irq_event);
     if (g_active[inst]) {
         slave_service(inst, r);
     }
-    dspic33ak_i2c_reg_irq_clear(&r->irq_event);
 }
 
 void dspic33ak_i2c_slave_rx_irq(dspic33ak_i2c_instance_t inst)
@@ -219,10 +234,10 @@ void dspic33ak_i2c_slave_rx_irq(dspic33ak_i2c_instance_t inst)
     if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return;
     }
+    dspic33ak_i2c_reg_irq_clear(&r->irq_rx);
     if (g_active[inst]) {
         slave_service(inst, r);
     }
-    dspic33ak_i2c_reg_irq_clear(&r->irq_rx);
 }
 
 void dspic33ak_i2c_slave_tx_irq(dspic33ak_i2c_instance_t inst)
@@ -232,8 +247,8 @@ void dspic33ak_i2c_slave_tx_irq(dspic33ak_i2c_instance_t inst)
     if (dspic33ak_i2c_get_regs(inst, &r) != DSPIC33AK_I2C_OK) {
         return;
     }
+    dspic33ak_i2c_reg_irq_clear(&r->irq_tx);
     if (g_active[inst]) {
         slave_service(inst, r);
     }
-    dspic33ak_i2c_reg_irq_clear(&r->irq_tx);
 }

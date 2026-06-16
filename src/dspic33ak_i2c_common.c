@@ -77,3 +77,36 @@ bool dspic33ak_i2c_is_present(dspic33ak_i2c_instance_t inst)
 {
     return dspic33ak_i2c_instance_is_present(inst);
 }
+
+/* --------------------------------------------------------------------------
+ * Shared role / lifecycle state
+ *
+ * The master and slave engines record their role here on init/deinit so the
+ * public dspic33ak_i2c_is_initialized() reflects either role. This is the only
+ * module state in the common layer.
+ * -------------------------------------------------------------------------- */
+static dspic33ak_i2c_role_t g_role[DSPIC33AK_I2C_INST_COUNT];
+
+void dspic33ak_i2c_set_role(dspic33ak_i2c_instance_t inst,
+                            dspic33ak_i2c_role_t role)
+{
+    if (dspic33ak_i2c_inst_is_valid(inst)) {
+        g_role[inst] = role;
+    }
+}
+
+dspic33ak_i2c_role_t dspic33ak_i2c_get_role(dspic33ak_i2c_instance_t inst)
+{
+    if (!dspic33ak_i2c_inst_is_valid(inst)) {
+        return DSPIC33AK_I2C_ROLE_NONE;
+    }
+    return g_role[inst];
+}
+
+/* --------------------------------------------------------------------------
+ * Initialized query (true once init'd as either master or slave)
+ * -------------------------------------------------------------------------- */
+bool dspic33ak_i2c_is_initialized(dspic33ak_i2c_instance_t inst)
+{
+    return (dspic33ak_i2c_get_role(inst) != DSPIC33AK_I2C_ROLE_NONE);
+}
