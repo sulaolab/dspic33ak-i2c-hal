@@ -283,10 +283,11 @@ void app_i2c_slave_init(void)
 }
 ```
 
-The application owns the three I2C interrupt vectors and forwards each to the
-matching slave handler (the same pattern used for other interrupt-driven HALs
-in this family). The HAL enables the interrupt sources; the application can set
-their priority through `dspic33ak_i2c_set_interrupt_priority()`:
+For the current classic client-mode slave path, client activity is routed to
+the event interrupt. The application owns that vector and forwards it to
+`dspic33ak_i2c_slave_event_irq()`. The HAL enables the event interrupt source;
+the application can set the available I2C interrupt priorities through
+`dspic33ak_i2c_set_interrupt_priority()`:
 
 ```c
 /* once, before/around dspic33ak_i2c_slave_init(): */
@@ -294,11 +295,17 @@ their priority through `dspic33ak_i2c_set_interrupt_priority()`:
 
 void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3Interrupt(void)
 { dspic33ak_i2c_slave_event_irq(DSPIC33AK_I2C_INST_3); }
+
+/* Optional delegate vectors if an integration enables dedicated RX/TX IRQs: */
 void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3RXInterrupt(void)
 { dspic33ak_i2c_slave_rx_irq(DSPIC33AK_I2C_INST_3); }
 void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3TXInterrupt(void)
 { dspic33ak_i2c_slave_tx_irq(DSPIC33AK_I2C_INST_3); }
 ```
+
+The RX/TX delegates are safe to forward from their vectors, and all three
+delegates funnel into the same service routine. The default slave initialization
+path only enables the aggregated event interrupt.
 
 Callback contract:
 
