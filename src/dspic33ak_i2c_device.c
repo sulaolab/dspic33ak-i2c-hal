@@ -123,3 +123,73 @@ bool dspic33ak_i2c_instance_is_present(dspic33ak_i2c_instance_t inst)
 {
     return (dspic33ak_i2c_get_device(inst) != 0);
 }
+
+dspic33ak_i2c_status_t dspic33ak_i2c_set_interrupt_priority(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t priority)
+{
+    if ((unsigned)inst >= (unsigned)DSPIC33AK_I2C_INST_COUNT) {
+        return DSPIC33AK_I2C_ERR_INVALID_ARG;
+    }
+    if (priority > 7u) {
+        return DSPIC33AK_I2C_ERR_INVALID_ARG;
+    }
+    if (dspic33ak_i2c_get_device(inst) == 0) {
+        return DSPIC33AK_I2C_ERR_NOT_PRESENT;
+    }
+
+    switch (inst) {
+    case DSPIC33AK_I2C_INST_1:
+#if defined(_I2C1IP)
+        _I2C1IP = priority;
+        return DSPIC33AK_I2C_OK;
+#else
+        break;
+#endif
+    case DSPIC33AK_I2C_INST_2:
+#if defined(_I2C2IP)
+        _I2C2IP = priority;
+        return DSPIC33AK_I2C_OK;
+#else
+        break;
+#endif
+    case DSPIC33AK_I2C_INST_3:
+    {
+        bool ok = false;
+#if defined(_I2C3IP)
+        _I2C3IP = priority;
+        ok = true;
+#endif
+#if defined(_I2C3RXIP)
+        _I2C3RXIP = priority;
+        ok = true;
+#endif
+#if defined(_I2C3TXIP)
+        _I2C3TXIP = priority;
+        ok = true;
+#endif
+        return ok ? DSPIC33AK_I2C_OK : DSPIC33AK_I2C_ERR_UNSUPPORTED;
+    }
+    case DSPIC33AK_I2C_INST_4:
+    {
+        bool ok = false;
+#if defined(_I2C4IP)
+        _I2C4IP = priority;
+        ok = true;
+#endif
+#if defined(_I2C4RXIP)
+        _I2C4RXIP = priority;
+        ok = true;
+#endif
+#if defined(_I2C4TXIP)
+        _I2C4TXIP = priority;
+        ok = true;
+#endif
+        return ok ? DSPIC33AK_I2C_OK : DSPIC33AK_I2C_ERR_UNSUPPORTED;
+    }
+    default:
+        break;
+    }
+
+    return DSPIC33AK_I2C_ERR_UNSUPPORTED;
+}

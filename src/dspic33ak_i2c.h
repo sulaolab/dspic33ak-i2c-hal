@@ -62,6 +62,15 @@ dspic33ak_i2c_status_t dspic33ak_i2c_deinit(
 bool dspic33ak_i2c_is_present(
     dspic33ak_i2c_instance_t inst);
 
+/*
+ * Set the CPU interrupt priority for the selected I2C instance's event line,
+ * and any dedicated RX/TX lines present on this device. The application still
+ * owns the vector functions; this hides the scattered _I2CxIP symbols.
+ */
+dspic33ak_i2c_status_t dspic33ak_i2c_set_interrupt_priority(
+    dspic33ak_i2c_instance_t inst,
+    uint8_t priority);
+
 bool dspic33ak_i2c_is_initialized(
     dspic33ak_i2c_instance_t inst);
 
