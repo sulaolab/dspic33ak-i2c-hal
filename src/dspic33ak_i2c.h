@@ -63,9 +63,10 @@ bool dspic33ak_i2c_is_present(
     dspic33ak_i2c_instance_t inst);
 
 /*
- * Set the CPU interrupt priority for the selected I2C instance's event line,
- * and any dedicated RX/TX lines present on this device. The application still
- * owns the vector functions; this hides the scattered _I2CxIP symbols.
+ * Set the CPU interrupt priority symbols available for the selected I2C
+ * instance on this device. Some instances expose only the event priority
+ * symbol; others also expose dedicated RX/TX priority symbols. The application
+ * still owns the vector functions; this hides the scattered _I2CxIP family.
  */
 dspic33ak_i2c_status_t dspic33ak_i2c_set_interrupt_priority(
     dspic33ak_i2c_instance_t inst,

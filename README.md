@@ -338,9 +338,11 @@ The device layer provides:
 
 * `dspic33ak_i2c_set_interrupt_priority()`
 
-It hides the scattered `_I2CxIP` / `_I2CxRXIP` / `_I2CxTXIP` symbols for each
-supported instance. A priority of 0 leaves the interrupt source masked by CPU
-priority rules; valid CPU priorities are 0 through 7.
+It sets the interrupt priority symbols available for the selected instance on
+the target device. Some instances expose only the event priority symbol; others
+also expose dedicated RX/TX priority symbols. A priority of 0 leaves the
+interrupt source masked by CPU priority rules; valid CPU priorities are 0
+through 7.
 
 The following APIs are reserved for a future small interrupt helper layer:
 
