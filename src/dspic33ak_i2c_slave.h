@@ -18,10 +18,11 @@ extern "C" {
  * types live in dspic33ak_i2c.h (included above); the bus-master role is in
  * dspic33ak_i2c_master.h. A program may include either or both.
  *
- * The slave is callback-driven and interrupt-based. The application owns the
- * three I2C interrupt vectors (_I2CxInterrupt / _I2CxRXInterrupt /
- * _I2CxTXInterrupt) and simply delegates each to the matching
- * dspic33ak_i2c_slave_*_irq() handler below (same pattern as the UART HAL).
+ * The slave is callback-driven and interrupt-based. In the current classic
+ * client-mode path, address/data/STOP activity is routed to the event
+ * interrupt. The application owns _I2CxInterrupt and delegates it to
+ * dspic33ak_i2c_slave_event_irq(). RX/TX delegate functions are also provided
+ * for integrations that explicitly enable those dedicated sources.
  *
  * Scope: 7-bit addressing only. 10-bit and general-call are not handled yet.
  */
@@ -58,11 +59,13 @@ dspic33ak_i2c_status_t dspic33ak_i2c_slave_deinit(
 /* True once dspic33ak_i2c_slave_init() has configured this instance. */
 bool dspic33ak_i2c_slave_is_active(dspic33ak_i2c_instance_t inst);
 
-/* ISR delegates. Call from the corresponding application-owned vector:
+/* ISR delegates. The default slave init path enables the aggregated event IRQ:
  *   _I2CxInterrupt   -> dspic33ak_i2c_slave_event_irq(inst)
+ * If an integration enables dedicated RX/TX IRQs, those vectors may also be
+ * forwarded:
  *   _I2CxRXInterrupt -> dspic33ak_i2c_slave_rx_irq(inst)
  *   _I2CxTXInterrupt -> dspic33ak_i2c_slave_tx_irq(inst)
- * Each clears the hardware flag it handles. */
+ * Each delegate clears the hardware flag it handles and services pending state. */
 void dspic33ak_i2c_slave_event_irq(dspic33ak_i2c_instance_t inst);
 void dspic33ak_i2c_slave_rx_irq(dspic33ak_i2c_instance_t inst);
 void dspic33ak_i2c_slave_tx_irq(dspic33ak_i2c_instance_t inst);

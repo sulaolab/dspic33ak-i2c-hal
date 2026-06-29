@@ -283,22 +283,29 @@ void app_i2c_slave_init(void)
 }
 ```
 
-The application owns the three I2C interrupt vectors and forwards each to the
-matching slave handler (the same pattern used for other interrupt-driven HALs
-in this family). The HAL enables the interrupt sources; the application sets
-their priority (a priority of 0 leaves them masked):
+For the current classic client-mode slave path, client activity is routed to
+the event interrupt. The application owns that vector and forwards it to
+`dspic33ak_i2c_slave_event_irq()`. The HAL enables the event interrupt source;
+the application can set the available I2C interrupt priorities through
+`dspic33ak_i2c_set_interrupt_priority()`:
 
 ```c
 /* once, before/around dspic33ak_i2c_slave_init(): */
-_I2C3IP = 4; _I2C3RXIP = 4; _I2C3TXIP = 4;
+(void)dspic33ak_i2c_set_interrupt_priority(DSPIC33AK_I2C_INST_3, 4u);
 
 void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3Interrupt(void)
 { dspic33ak_i2c_slave_event_irq(DSPIC33AK_I2C_INST_3); }
+
+/* Optional delegate vectors if an integration enables dedicated RX/TX IRQs: */
 void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3RXInterrupt(void)
 { dspic33ak_i2c_slave_rx_irq(DSPIC33AK_I2C_INST_3); }
 void __attribute__((__interrupt__, __no_auto_psv__)) _I2C3TXInterrupt(void)
 { dspic33ak_i2c_slave_tx_irq(DSPIC33AK_I2C_INST_3); }
 ```
+
+The RX/TX delegates are safe to forward from their vectors, and all three
+delegates funnel into the same service routine. The default slave initialization
+path only enables the aggregated event interrupt.
 
 Callback contract:
 
@@ -333,6 +340,16 @@ done checks. The normal blocking API adds the extra sequencing needed for safe
 back-to-back transactions.
 
 ## Interrupt helper API
+
+The device layer provides:
+
+* `dspic33ak_i2c_set_interrupt_priority()`
+
+It sets the interrupt priority symbols available for the selected instance on
+the target device. Some instances expose only the event priority symbol; others
+also expose dedicated RX/TX priority symbols. A priority of 0 leaves the
+interrupt source masked by CPU priority rules; valid CPU priorities are 0
+through 7.
 
 The following APIs are reserved for a future small interrupt helper layer:
 
